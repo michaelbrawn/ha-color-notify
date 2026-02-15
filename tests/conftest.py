@@ -2,7 +2,11 @@
 
 import sys
 import types
+from types import ModuleType
 from unittest.mock import MagicMock
+
+# Kelvin-to-RGB stub: mirrors HA's color_temperature_to_rgb
+from tests.support.color_util_stub import color_temperature_to_rgb as _color_temperature_to_rgb
 
 # Stub out homeassistant modules before any imports
 HA_MODULES = [
@@ -39,6 +43,7 @@ ha_const.CONF_ENTITIES = "entities"
 ha_const.CONF_ENTITY_ID = "entity_id"
 ha_const.CONF_FORCE_UPDATE = "force_update"
 ha_const.CONF_NAME = "name"
+ha_const.CONF_RGB = "rgb"
 ha_const.CONF_TYPE = "type"
 ha_const.CONF_UNIQUE_ID = "unique_id"
 ha_const.SERVICE_TURN_OFF = "turn_off"
@@ -53,9 +58,13 @@ ha_light.ATTR_COLOR_MODE = "color_mode"
 ha_light.ATTR_COLOR_TEMP_KELVIN = "color_temp_kelvin"
 ha_light.ATTR_HS_COLOR = "hs_color"
 ha_light.ATTR_RGB_COLOR = "rgb_color"
+ha_light.ATTR_TRANSITION = "transition"
 ha_light.ATTR_XY_COLOR = "xy_color"
 ha_light.ColorMode = MagicMock()
 ha_light.ColorMode.COLOR_TEMP = "color_temp"
+ha_light.DOMAIN = "light"
+
+
 class _StubLightEntity:
     _attr_is_on = None
 
@@ -63,8 +72,8 @@ class _StubLightEntity:
     def is_on(self):
         return self._attr_is_on
 
+
 ha_light.LightEntity = _StubLightEntity
-ha_light.DOMAIN = "light"
 
 ha_switch = sys.modules["homeassistant.components.switch"]
 ha_switch.DOMAIN = "switch"
@@ -77,3 +86,7 @@ ha_core.callback = lambda f: f
 ha_core.Event = MagicMock()
 ha_core.EventStateChangedData = MagicMock()
 ha_core.HomeAssistant = MagicMock()
+
+# Wire up color util with our stub
+ha_util_color = sys.modules["homeassistant.util.color"]
+ha_util_color.color_temperature_to_rgb = _color_temperature_to_rgb

@@ -10,7 +10,12 @@ import json
 import logging
 from typing import Any
 
-from homeassistant.components.light import ATTR_RGB_COLOR
+from homeassistant.components.light import (
+    ATTR_BRIGHTNESS,
+    ATTR_COLOR_TEMP_KELVIN,
+    ATTR_RGB_COLOR,
+    ATTR_TRANSITION,
+)
 from homeassistant.const import CONF_DELAY, CONF_RGB
 
 from ..const import OFF_RGB, WARM_WHITE_RGB
@@ -30,17 +35,45 @@ class ColorInfo:
 
     rgb: tuple = WARM_WHITE_RGB
     brightness: float = 100.0
+    kelvin: int | None = None
+    transition: float | None = None
+    explicit_brightness: int | None = None
 
     def interpolated_to(self, end: ColorInfo, amount: float) -> ColorInfo:
         """Return a new ColorInfo that is 0-1.0 linearly interpolated between end."""
+        # If both have kelvin, interpolate kelvin
+        if self.kelvin is not None and end.kelvin is not None:
+            k = int(self.kelvin + (end.kelvin - self.kelvin) * amount)
+            b = self.brightness + (end.brightness - self.brightness) * amount
+            return ColorInfo(
+                rgb=self.rgb,
+                brightness=b,
+                kelvin=k,
+                explicit_brightness=self.explicit_brightness,
+            )
+        # Fall back to RGB interpolation
         a = (*self.rgb, self.brightness)
         b = (*end.rgb, end.brightness)
-        return ColorInfo(*_interpolate(a, b, amount))
+        interpolated = _interpolate(a, b, amount)
+        return ColorInfo(
+            rgb=interpolated[:3],
+            brightness=interpolated[3],
+            explicit_brightness=self.explicit_brightness,
+        )
 
     @property
     def light_params(self) -> dict[str, Any]:
         """Return dict suitable for passing to light.turn_on service."""
-        return {ATTR_RGB_COLOR: self.rgb}
+        params: dict[str, Any] = {}
+        if self.kelvin is not None:
+            params[ATTR_COLOR_TEMP_KELVIN] = self.kelvin
+        else:
+            params[ATTR_RGB_COLOR] = self.rgb
+        if self.transition is not None:
+            params[ATTR_TRANSITION] = self.transition
+        if self.explicit_brightness is not None:
+            params[ATTR_BRIGHTNESS] = self.explicit_brightness
+        return params
 
 
 class LightSequence:
@@ -85,14 +118,10 @@ class LightSequence:
                     loop_stack.append(next_loop_id)
                     next_loop_id += 1
                 elif item.startswith("]"):
-                    with_iter_cnt = item.split(",")
-                    if len(with_iter_cnt) == 2:
-                        iter_cnt = int(with_iter_cnt[1])
-                    else:
-                        iter_cnt = -1
+                    parts = item.split(",")
+                    iter_cnt = int(parts[1]) if len(parts) == 2 else -1
+                    if iter_cnt < 0:
                         new_sequence._loops_forever = True
-
-                    iter_cnt = int(with_iter_cnt[1]) if len(with_iter_cnt) == 2 else -1
                     if len(loop_stack) == 0:
                         raise Exception(
                             f"Loop close in entry #{idx+1} with no open loop!"
@@ -103,13 +132,29 @@ class LightSequence:
                     try:
                         json_txt = f"{{{item.strip().strip('{}')}}}"  # Strip and re-add curly braces
                         item_dict = json.loads(json_txt)
-                        rgb = item_dict.get(ATTR_RGB_COLOR, item_dict[CONF_RGB])
+                        rgb = item_dict.get(
+                            ATTR_RGB_COLOR, item_dict.get(CONF_RGB)
+                        )
                     except Exception as e:
                         raise Exception(f"Error in entry #{idx+1}: {str(e)}")
-                    color = ColorInfo(rgb=rgb)
+
+                    kelvin = item_dict.get("kelvin")
+                    transition = item_dict.get("transition")
+                    brightness = item_dict.get("brightness")
+
+                    if rgb is None and kelvin is None:
+                        raise Exception(
+                            f"Entry #{idx+1} must have 'rgb' or 'kelvin'"
+                        )
+
+                    color = ColorInfo(
+                        rgb=tuple(rgb) if rgb else WARM_WHITE_RGB,
+                        kelvin=kelvin if not rgb else None,
+                        transition=transition,
+                        explicit_brightness=brightness,
+                    )
                     if initial_color is None:
                         initial_color = color
-                    # TODO: Fade
                     new_sequence._addStep(_StepSetColor(color))
                     if delay := item_dict.get(CONF_DELAY):
                         new_sequence._addStep(_StepDelay(delay))

@@ -258,6 +258,7 @@ class NotificationLightEntity(LightEntity, RestoreEntity):
         self._last_on_rgb: tuple = tuple(
             config_entry.data.get(CONF_RGB_SELECTOR, WARM_WHITE_RGB)
         )
+        self._last_on_kelvin: int | None = None
         self._last_brightness: int = 255
 
     async def async_added_to_hass(self):
@@ -712,7 +713,10 @@ class NotificationLightEntity(LightEntity, RestoreEntity):
             )
             return False
 
-        if (
+        # Kelvin path: skip RGB-to-HS conversion, pass kelvin directly
+        if ATTR_COLOR_TEMP_KELVIN in kwargs:
+            self._last_on_kelvin = kwargs[ATTR_COLOR_TEMP_KELVIN]
+        elif (
             ATTR_RGB_COLOR in kwargs
             and ATTR_BRIGHTNESS not in kwargs
             and ColorMode.RGB
@@ -721,7 +725,6 @@ class NotificationLightEntity(LightEntity, RestoreEntity):
             )  # wrapped bulb's real capabilities
         ):
             # We want low RGB values to be dim, but HomeAssistant needs a separate brightness value for that.
-            # TODO: Do we actually want this?
             # If brightness was not passed in and bulb doesn't support RGB then convert to HS + Brightness.
             rgb = kwargs.pop(ATTR_RGB_COLOR)
             h, s, v = color_RGB_to_hsv(*rgb)

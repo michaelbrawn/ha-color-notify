@@ -84,7 +84,30 @@ Notifications can be customized with colors, priorities, and display patterns. P
 - **Color**: Sets a solid color for the notification.
 - **Pattern**: Allows complex animations with sequences of colors and delays.
   - **Loop**: Use `[` to start and `], loopcnt` to end a loop (e.g., `], 5` for five repetitions).
-  - **Step**: Each step includes `"rgb": [R,G,B]` for color and `"delay": seconds` for duration (e.g., `{"rgb": [255,0,0], "delay": 0.5}` for red for 0.5 seconds).
+  - **Step**: Each step is a JSON object with the following fields:
+
+    | Field | Type | Required | Description |
+    |-------|------|----------|-------------|
+    | `rgb` | `[R,G,B]` | yes* | RGB color (0-255 per channel). Takes priority over `kelvin` if both are provided. |
+    | `kelvin` | `int` | yes* | Color temperature in Kelvin (e.g., `2700` for warm white). Only used when `rgb` is not present. |
+    | `delay` | `float` | no | Hold duration in seconds before advancing to the next step |
+    | `transition` | `float` | no | Fade time in seconds. Uses Home Assistant's native `transition` parameter for smooth fading. |
+    | `brightness` | `int` | no | Brightness (0-255). When set, brightness is sent explicitly to the light, preserving it across color changes. |
+
+    *Each step must include `rgb` or `kelvin`. If both are provided, `rgb` is used and `kelvin` is ignored.
+
+  - **Examples**:
+    - Solid red for 0.5 seconds: `{"rgb": [255,0,0], "delay": 0.5}`
+    - Fade to green over 0.5s, hold 1s, fade to warm white over 1s:
+      ```
+      {"rgb": [0,255,0], "transition": 0.5, "delay": 1}
+      {"kelvin": 2700, "transition": 1}
+      ```
+    - Flash blue at fixed brightness:
+      ```
+      {"rgb": [0,0,255], "brightness": 128, "transition": 0.5, "delay": 0.5}
+      {"kelvin": 2700, "brightness": 128, "transition": 1}
+      ```
 
 ---
 
@@ -105,9 +128,9 @@ To activate a notification, simply switch on the desired notification’s switch
 
 ## TODO
 
-- Separate RGB and brightness controls for animations.
+- ~~Separate RGB and brightness controls for animations.~~ Done -- use `"brightness"` in pattern steps.
 - Add services for notification management (e.g., clear notifications, cycle notifications).
-- Fade control, non-RGB configs (hsv, color temp)
+- ~~Fade control, non-RGB configs (hsv, color temp)~~ Done -- use `"transition"` for fades and `"kelvin"` for color temperature.
 
 ---
 
