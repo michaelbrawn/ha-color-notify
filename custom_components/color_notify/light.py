@@ -713,11 +713,11 @@ class NotificationLightEntity(LightEntity, RestoreEntity):
             )
             return False
 
-        # Kelvin path: skip RGB-to-HS conversion, pass kelvin directly
-        if ATTR_COLOR_TEMP_KELVIN in kwargs:
-            self._last_on_kelvin = kwargs[ATTR_COLOR_TEMP_KELVIN]
-        elif (
-            ATTR_RGB_COLOR in kwargs
+        # RGB-to-HS conversion: needed when bulb doesn't natively support RGB
+        # Kelvin kwargs skip this entirely — they pass through to the service call as-is
+        if (
+            ATTR_COLOR_TEMP_KELVIN not in kwargs
+            and ATTR_RGB_COLOR in kwargs
             and ATTR_BRIGHTNESS not in kwargs
             and ColorMode.RGB
             not in (
@@ -788,27 +788,38 @@ class NotificationLightEntity(LightEntity, RestoreEntity):
         """Handle a turn_on service call."""
         self._attr_is_on = True
 
-        if ATTR_HS_COLOR in kwargs:
-            rgb = color_hs_to_RGB(*kwargs[ATTR_HS_COLOR])
-        elif ATTR_COLOR_TEMP_KELVIN in kwargs:
-            rgb = color_temperature_to_rgb(kwargs[ATTR_COLOR_TEMP_KELVIN])
-        elif ATTR_RGB_COLOR in kwargs or ATTR_BRIGHTNESS in kwargs:
-            rgb = kwargs.get(ATTR_RGB_COLOR, self._last_on_rgb)
-            self._last_brightness = kwargs.get(ATTR_BRIGHTNESS, self._last_brightness)
-            v = (100 / 255) * self._last_brightness
-            h, s, _ = color_RGB_to_hsv(*rgb)
-            rgb = color_hsv_to_RGB(h, s, v)
-        else:
-            rgb = self._last_on_rgb
-
         priority = self._light_on_priority
         if self._dynamic_priority:
             # Dynamic priority gets 0.5 boost of top priority to ensure light-on always shows.
             priority = max(priority, self._get_top_sequences()[0].priority) + 0.5
 
-        self._last_on_rgb = rgb
+        if ATTR_COLOR_TEMP_KELVIN in kwargs:
+            self._last_on_kelvin = kwargs[ATTR_COLOR_TEMP_KELVIN]
+            self._last_on_rgb = WARM_WHITE_RGB
+            color = ColorInfo(kelvin=self._last_on_kelvin)
+        elif ATTR_HS_COLOR in kwargs:
+            self._last_on_kelvin = None
+            rgb = color_hs_to_RGB(*kwargs[ATTR_HS_COLOR])
+            self._last_on_rgb = rgb
+            color = ColorInfo(rgb=rgb)
+        elif ATTR_RGB_COLOR in kwargs or ATTR_BRIGHTNESS in kwargs:
+            # TODO: brightness-only adjustment while in kelvin mode loses kelvin state
+            self._last_on_kelvin = None
+            rgb = kwargs.get(ATTR_RGB_COLOR, self._last_on_rgb)
+            self._last_brightness = kwargs.get(ATTR_BRIGHTNESS, self._last_brightness)
+            v = (100 / 255) * self._last_brightness
+            h, s, _ = color_RGB_to_hsv(*rgb)
+            rgb = color_hsv_to_RGB(h, s, v)
+            self._last_on_rgb = rgb
+            color = ColorInfo(rgb=rgb)
+        else:
+            if self._last_on_kelvin is not None:
+                color = ColorInfo(kelvin=self._last_on_kelvin)
+            else:
+                color = ColorInfo(rgb=self._last_on_rgb)
+
         sequence = replace(
-            LIGHT_ON_SEQUENCE, pattern=[ColorInfo(rgb=rgb)], priority=priority
+            LIGHT_ON_SEQUENCE, pattern=[color], priority=priority
         )
 
         await self._add_sequence(STATE_ON, sequence)
@@ -840,15 +851,20 @@ class NotificationLightEntity(LightEntity, RestoreEntity):
         """Return the state attributes."""
         data: dict[str, Any] = {}
         if self.is_on:
-            data[ATTR_COLOR_MODE] = ColorMode.RGB
-            data[ATTR_RGB_COLOR] = self._last_on_rgb
-            h, s, v = color_RGB_to_hsv(*self._last_on_rgb)
+            if self._last_on_kelvin is not None:
+                data[ATTR_COLOR_MODE] = ColorMode.COLOR_TEMP
+                data[ATTR_COLOR_TEMP_KELVIN] = self._last_on_kelvin
+                rgb = color_temperature_to_rgb(self._last_on_kelvin)
+                data[ATTR_RGB_COLOR] = rgb
+                h, s, v = color_RGB_to_hsv(*rgb)
+            else:
+                data[ATTR_COLOR_MODE] = ColorMode.RGB
+                data[ATTR_RGB_COLOR] = self._last_on_rgb
+                h, s, v = color_RGB_to_hsv(*self._last_on_rgb)
             brightness = (255 / 100) * v  # Re-scale 'v' from 0-100 to 0-255
             data[ATTR_BRIGHTNESS] = brightness
-            data[ATTR_COLOR_TEMP_KELVIN] = color_temperature_to_rgb
             x, y = color_hs_to_xy(h, s)
             data[ATTR_XY_COLOR] = (x, y)
-            data[ATTR_COLOR_TEMP_KELVIN] = color_xy_to_temperature(x, y)
         return data
 
     @property
@@ -858,5 +874,5 @@ class NotificationLightEntity(LightEntity, RestoreEntity):
 
     @cached_property
     def supported_color_modes(self) -> set[str] | None:
-        """Light wrapper expects RGB."""
-        return [ColorMode.RGB]
+        """Light wrapper supports RGB and color temperature."""
+        return [ColorMode.RGB, ColorMode.COLOR_TEMP]

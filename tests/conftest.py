@@ -1,8 +1,7 @@
 """Stub homeassistant modules for unit testing without full HA install."""
 
+import colorsys
 import sys
-import types
-from types import ModuleType
 from unittest.mock import MagicMock
 
 # Kelvin-to-RGB stub: mirrors HA's color_temperature_to_rgb
@@ -61,6 +60,7 @@ ha_light.ATTR_RGB_COLOR = "rgb_color"
 ha_light.ATTR_TRANSITION = "transition"
 ha_light.ATTR_XY_COLOR = "xy_color"
 ha_light.ColorMode = MagicMock()
+ha_light.ColorMode.RGB = "rgb"
 ha_light.ColorMode.COLOR_TEMP = "color_temp"
 ha_light.DOMAIN = "light"
 
@@ -87,6 +87,35 @@ ha_core.Event = MagicMock()
 ha_core.EventStateChangedData = MagicMock()
 ha_core.HomeAssistant = MagicMock()
 
-# Wire up color util with our stub
+# Wire up color util stubs — mirrors HA's homeassistant.util.color
 ha_util_color = sys.modules["homeassistant.util.color"]
 ha_util_color.color_temperature_to_rgb = _color_temperature_to_rgb
+
+
+def _color_RGB_to_hsv(r, g, b):
+    h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+    return (h * 360, s * 100, v * 100)
+
+
+def _color_hsv_to_RGB(h, s, v):
+    r, g, b = colorsys.hsv_to_rgb(h / 360.0, s / 100.0, v / 100.0)
+    return (int(round(r * 255)), int(round(g * 255)), int(round(b * 255)))
+
+
+def _color_hs_to_RGB(h, s):
+    return _color_hsv_to_RGB(h, s, 100)
+
+
+def _color_hs_to_xy(h, s):
+    return (0.3, 0.3)  # Simplified — exact xy values not under test
+
+
+def _color_xy_to_temperature(x, y):
+    return 4000  # Simplified — exact value not under test
+
+
+ha_util_color.color_RGB_to_hsv = _color_RGB_to_hsv
+ha_util_color.color_hsv_to_RGB = _color_hsv_to_RGB
+ha_util_color.color_hs_to_RGB = _color_hs_to_RGB
+ha_util_color.color_hs_to_xy = _color_hs_to_xy
+ha_util_color.color_xy_to_temperature = _color_xy_to_temperature

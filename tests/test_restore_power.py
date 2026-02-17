@@ -1,10 +1,11 @@
 """Tests for restore_power config option (startup white blast fix)."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from custom_components.color_notify.const import CONF_RESTORE_POWER
+from tests.support.entity_helpers import make_config_entry, make_light_entity
 
 
 class FakeState:
@@ -12,43 +13,13 @@ class FakeState:
         self.state = state
 
 
-def make_config_entry(restore_power: bool | None = None):
-    entry = MagicMock()
-    data = {
-        "type": "light",
-        "name": "Test Light",
-        "entity_id": "light.test_real_light",
-        "color_picker": [255, 249, 216],
-        "dynamic_priority": True,
-        "priority": 1000,
-        "delay": True,
-        "delay_time": {"seconds": 5},
-        "peek_time": {"seconds": 5},
-    }
+def _make_restore_entity(restore_power: bool | None = None):
+    overrides = {}
     if restore_power is not None:
-        data[CONF_RESTORE_POWER] = restore_power
-    entry.data = data
-    entry.options = {}
-    entry.title = "[Light] Test Light"
-    entry.async_create_background_task = MagicMock()
-    entry.async_on_unload = MagicMock()
-    return entry
-
-
-def make_light_entity(config_entry):
-    from custom_components.color_notify.light import NotificationLightEntity
-
-    entity = NotificationLightEntity(
-        unique_id="test_unique_id",
-        wrapped_entity_id="light.test_real_light",
-        config_entry=config_entry,
-    )
-    entity.hass = MagicMock()
-    entity.hass.states.get.return_value = None
-    entity.hass.bus.async_fire = MagicMock()
-    entity.hass.async_create_task = MagicMock()
-    entity.async_write_ha_state = MagicMock()
-    entity.async_schedule_update_ha_state = MagicMock()
+        overrides[CONF_RESTORE_POWER] = restore_power
+    entry = make_config_entry(data_overrides=overrides)
+    entity = make_light_entity(entry)
+    # Restore tests need to intercept async_turn_on/off calls
     entity.async_turn_on = AsyncMock()
     entity.async_turn_off = AsyncMock()
     return entity
@@ -78,8 +49,7 @@ class TestRestorePowerConfig:
         (True, True),
     ], ids=["default_missing", "explicit_false", "explicit_true"])
     def test_restore_power_value(self, restore_power, expected):
-        entry = make_config_entry(restore_power=restore_power)
-        entity = make_light_entity(entry)
+        entity = _make_restore_entity(restore_power=restore_power)
         assert entity._restore_power is expected
 
 
@@ -88,7 +58,7 @@ class TestRestorePowerDisabled:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("last_state", ["on", "off"])
     async def test_no_commands_sent(self, last_state):
-        entity = make_light_entity(make_config_entry(restore_power=False))
+        entity = _make_restore_entity(restore_power=False)
         await simulate_restore(entity, last_state)
 
         assert entity._attr_is_on == (last_state == "on")
@@ -100,7 +70,7 @@ class TestRestorePowerEnabled:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("last_state", ["on", "off"])
     async def test_command_sent(self, last_state):
-        entity = make_light_entity(make_config_entry(restore_power=True))
+        entity = _make_restore_entity(restore_power=True)
         await simulate_restore(entity, last_state)
 
         assert entity._attr_is_on == (last_state == "on")
@@ -108,7 +78,7 @@ class TestRestorePowerEnabled:
 
     @pytest.mark.asyncio
     async def test_no_previous_state_does_nothing(self):
-        entity = make_light_entity(make_config_entry(restore_power=True))
+        entity = _make_restore_entity(restore_power=True)
         await simulate_restore(entity, None)
 
         entity.hass.async_create_task.assert_not_called()
