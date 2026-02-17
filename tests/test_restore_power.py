@@ -1,6 +1,6 @@
 """Tests for restore_power config option (startup white blast fix)."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -83,3 +83,43 @@ class TestRestorePowerEnabled:
 
         entity.hass.async_create_task.assert_not_called()
         entity.async_schedule_update_ha_state.assert_not_called()
+
+
+class TestStartupQuiet:
+
+    @pytest.mark.parametrize("restore_power,expected_quiet", [
+        (False, True),
+        (True, False),
+    ], ids=["restore_off_quiet_on", "restore_on_quiet_off"])
+    def test_startup_quiet_flag(self, restore_power, expected_quiet):
+        entity = _make_restore_entity(restore_power=restore_power)
+        assert entity._startup_quiet is expected_quiet
+
+    @pytest.mark.asyncio
+    async def test_turn_on_blocked_during_startup_quiet(self):
+        entity = _make_restore_entity(restore_power=False)
+        entity._wrapped_init_done = True
+        entity.hass.services.async_call = AsyncMock()
+
+        result = await entity._wrapped_light_turn_on(rgb_color=(255, 249, 216))
+        assert result is True
+        entity.hass.services.async_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_turn_off_blocked_during_startup_quiet(self):
+        entity = _make_restore_entity(restore_power=False)
+        entity._wrapped_init_done = True
+        entity.hass.services.async_call = AsyncMock()
+
+        result = await entity._wrapped_light_turn_off()
+        assert result is True
+        entity.hass.services.async_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_commands_allowed_when_restore_power_true(self):
+        entity = _make_restore_entity(restore_power=True)
+        entity._wrapped_init_done = True
+        entity.hass.services.async_call = AsyncMock()
+
+        await entity._wrapped_light_turn_off()
+        entity.hass.services.async_call.assert_called_once()
