@@ -7,6 +7,10 @@ without sending any commands to the wrapped light.
 
 The bug: upstream code unconditionally called async_turn_on() on restore,
 causing a bright white blast on every HA restart.
+
+Additional: startup_quiet flag blocks the worker loop from sending commands
+to the real light until the first notification activates. This prevents the
+worker loop's base LIGHT_OFF_SEQUENCE from turning off the real light.
 """
 
 import asyncio
@@ -212,3 +216,54 @@ class TestRestorePowerNoState:
 
         entity.hass.async_create_task.assert_not_called()
         entity.async_schedule_update_ha_state.assert_not_called()
+
+
+class TestStartupQuiet:
+    """startup_quiet blocks worker loop commands until first notification."""
+
+    def test_startup_quiet_true_when_restore_power_false(self):
+        """startup_quiet=True when restore_power=False."""
+        config_entry = make_config_entry(restore_power=False)
+        entity = make_light_entity(config_entry)
+        assert entity._startup_quiet is True
+
+    def test_startup_quiet_false_when_restore_power_true(self):
+        """startup_quiet=False when restore_power=True (old behavior)."""
+        config_entry = make_config_entry(restore_power=True)
+        entity = make_light_entity(config_entry)
+        assert entity._startup_quiet is False
+
+    @pytest.mark.asyncio
+    async def test_turn_on_blocked_during_startup_quiet(self):
+        """_wrapped_light_turn_on returns True but sends no command."""
+        config_entry = make_config_entry(restore_power=False)
+        entity = make_light_entity(config_entry)
+        entity._wrapped_init_done = True
+        entity.hass.services.async_call = AsyncMock()
+
+        result = await entity._wrapped_light_turn_on(rgb_color=(255, 249, 216))
+        assert result is True
+        entity.hass.services.async_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_turn_off_blocked_during_startup_quiet(self):
+        """_wrapped_light_turn_off returns True but sends no command."""
+        config_entry = make_config_entry(restore_power=False)
+        entity = make_light_entity(config_entry)
+        entity._wrapped_init_done = True
+        entity.hass.services.async_call = AsyncMock()
+
+        result = await entity._wrapped_light_turn_off()
+        assert result is True
+        entity.hass.services.async_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_commands_allowed_when_restore_power_true(self):
+        """No startup_quiet when restore_power=True — commands go through."""
+        config_entry = make_config_entry(restore_power=True)
+        entity = make_light_entity(config_entry)
+        entity._wrapped_init_done = True
+        entity.hass.services.async_call = AsyncMock()
+
+        await entity._wrapped_light_turn_off()
+        entity.hass.services.async_call.assert_called_once()
