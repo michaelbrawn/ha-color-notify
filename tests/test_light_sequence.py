@@ -1,17 +1,12 @@
 """Tests for LightSequence pattern parser and execution."""
 
-import asyncio
-
 import pytest
 
 from custom_components.color_notify.utils.light_sequence import ColorInfo, LightSequence
 from custom_components.color_notify.const import OFF_RGB, WARM_WHITE_RGB
 
 
-# -- Pattern parser: backward compatibility --
-
 class TestPatternParserBackwardCompat:
-    """Existing patterns still parse correctly."""
 
     def test_rgb_only_pattern(self):
         seq = LightSequence.create_from_pattern([
@@ -40,41 +35,33 @@ class TestPatternParserBackwardCompat:
             ColorInfo(rgb=(255, 0, 0)),
             ColorInfo(rgb=(0, 255, 0)),
         ])
-        # Initial color is first item
         assert seq.color.rgb == (255, 0, 0)
 
     def test_curly_brace_stripping(self):
-        """Parser strips and re-adds curly braces, so both formats work."""
         seq = LightSequence.create_from_pattern([
             '"rgb": [100, 100, 100]',
         ])
         assert seq.color.rgb == (100, 100, 100)
 
 
-# -- Pattern parser: new fields --
-
 class TestPatternParserNewFields:
-    """New fields parse from JSON."""
 
-    def test_transition_parsed(self):
-        seq = LightSequence.create_from_pattern([
-            '{"rgb": [0, 255, 0], "transition": 0.5}',
-        ])
-        assert seq.color.transition == 0.5
+    @pytest.mark.parametrize("json_str,field,expected", [
+        ('{"rgb": [0, 255, 0], "transition": 0.5}', "transition", 0.5),
+        ('{"rgb": [255, 0, 0], "brightness": 128}', "explicit_brightness", 128),
+        ('{"rgb": [255, 0, 0], "transition": 0}', "transition", 0),
+        ('{"rgb": [255, 0, 0], "brightness": 0}', "explicit_brightness", 0),
+    ], ids=["transition", "brightness", "transition_zero", "brightness_zero"])
+    def test_field_parsed(self, json_str, field, expected):
+        seq = LightSequence.create_from_pattern([json_str])
+        assert getattr(seq.color, field) == expected
 
     def test_kelvin_parsed(self):
         seq = LightSequence.create_from_pattern([
             '{"kelvin": 2700, "delay": 1}',
         ])
-        color = seq.color
-        assert color.kelvin == 2700
-        assert color.rgb == WARM_WHITE_RGB
-
-    def test_brightness_parsed(self):
-        seq = LightSequence.create_from_pattern([
-            '{"rgb": [255, 0, 0], "brightness": 128}',
-        ])
-        assert seq.color.explicit_brightness == 128
+        assert seq.color.kelvin == 2700
+        assert seq.color.rgb == WARM_WHITE_RGB
 
     def test_all_new_fields(self):
         seq = LightSequence.create_from_pattern([
@@ -96,19 +83,10 @@ class TestPatternParserNewFields:
         seq = LightSequence.create_from_pattern([
             '{"kelvin": 2200, "brightness": 64, "transition": 2.0}',
         ])
-        color = seq.color
-        params = color.light_params
-        assert params["color_temp_kelvin"] == 2200
-        assert params["brightness"] == 64
-        assert params["transition"] == 2.0
+        params = seq.color.light_params
+        assert params == {"color_temp_kelvin": 2200, "brightness": 64, "transition": 2.0}
 
-    def test_transition_zero(self):
-        seq = LightSequence.create_from_pattern([
-            '{"rgb": [255, 0, 0], "transition": 0}',
-        ])
-        assert seq.color.transition == 0
-
-    def test_rgb_defaults_over_kelvin_in_json(self):
+    def test_rgb_takes_precedence_over_kelvin(self):
         seq = LightSequence.create_from_pattern([
             '{"rgb": [255, 0, 0], "kelvin": 2700}',
         ])
@@ -118,43 +96,18 @@ class TestPatternParserNewFields:
         assert "rgb_color" in color.light_params
         assert "color_temp_kelvin" not in color.light_params
 
-    def test_brightness_zero(self):
-        seq = LightSequence.create_from_pattern([
-            '{"rgb": [255, 0, 0], "brightness": 0}',
-        ])
-        assert seq.color.explicit_brightness == 0
-
-
-# -- Pattern parser: error handling --
 
 class TestPatternParserErrors:
-    """Parser error handling."""
 
-    def test_missing_rgb_and_kelvin_raises(self):
-        with pytest.raises(Exception, match="must have 'rgb' or 'kelvin'"):
-            LightSequence.create_from_pattern([
-                '{"delay": 1}',
-            ])
-
-    def test_invalid_json_raises(self):
-        with pytest.raises(Exception, match="Error in entry #1"):
-            LightSequence.create_from_pattern([
-                'not valid json at all',
-            ])
-
-    def test_unclosed_loop_raises(self):
-        with pytest.raises(Exception, match="was not closed"):
-            LightSequence.create_from_pattern([
-                '{"rgb": [255, 0, 0]}',
-                "[",
-            ])
-
-    def test_close_without_open_raises(self):
-        with pytest.raises(Exception, match="no open loop"):
-            LightSequence.create_from_pattern([
-                '{"rgb": [255, 0, 0]}',
-                "],2",
-            ])
+    @pytest.mark.parametrize("pattern,match", [
+        (['{"delay": 1}'], "must have 'rgb' or 'kelvin'"),
+        (["not valid json at all"], "Error in entry #1"),
+        (['{"rgb": [255, 0, 0]}', "["], "was not closed"),
+        (['{"rgb": [255, 0, 0]}', "],2"], "no open loop"),
+    ], ids=["missing_color", "invalid_json", "unclosed_loop", "close_without_open"])
+    def test_parse_error(self, pattern, match):
+        with pytest.raises(Exception, match=match):
+            LightSequence.create_from_pattern(pattern)
 
     def test_nested_unclosed_loop_raises(self):
         with pytest.raises(Exception, match="was not closed"):
@@ -164,14 +117,10 @@ class TestPatternParserErrors:
                 "[",
                 '{"rgb": [0, 255, 0]}',
                 "],2",
-                # outer loop not closed
             ])
 
 
-# -- Empty and edge-case patterns --
-
 class TestPatternEdgeCases:
-    """Edge cases for pattern construction."""
 
     def test_empty_pattern_gives_off_color(self):
         seq = LightSequence.create_from_pattern([])
@@ -207,10 +156,7 @@ class TestPatternEdgeCases:
         assert c1 is not c2
 
 
-# -- Sequence execution --
-
 class TestSequenceExecution:
-    """Test sequence step execution."""
 
     @pytest.mark.asyncio
     async def test_steps_execute_in_order(self):
@@ -230,30 +176,23 @@ class TestSequenceExecution:
         seq = LightSequence.create_from_pattern([
             '{"rgb": [255, 0, 0]}',
         ])
-        done = await seq.runNextStep()
-        assert done
-        # Running again after done should still return True
-        done = await seq.runNextStep()
-        assert done
+        assert await seq.runNextStep()
+        assert await seq.runNextStep()
 
     @pytest.mark.asyncio
     async def test_empty_sequence_is_immediately_done(self):
         seq = LightSequence.create_from_pattern([])
-        done = await seq.runNextStep()
-        assert done
+        assert await seq.runNextStep()
 
     @pytest.mark.asyncio
     async def test_delay_step_created_from_pattern(self):
-        """Pattern with delay creates a delay step (tested by step count)."""
         seq = LightSequence.create_from_pattern([
             '{"rgb": [255, 0, 0], "delay": 0.001}',
         ])
-        # Step 1: set color, Step 2: delay -- so 2 steps, not done after first
         done = await seq.runNextStep()
         assert not done
         assert seq.color.rgb == (255, 0, 0)
-        done = await seq.runNextStep()  # delay step
-        assert done
+        assert await seq.runNextStep()
 
     @pytest.mark.asyncio
     async def test_loop_executes_correct_iterations(self):
@@ -264,15 +203,12 @@ class TestSequenceExecution:
         ])
         assert not seq.loops_forever
         colors_seen = []
-        for _ in range(20):  # safety limit
+        for _ in range(20):
             done = await seq.runNextStep()
             colors_seen.append(seq.color.rgb)
             if done:
                 break
         assert done
-        # Open loop + set color + close loop * 2 iterations
-        # iter1: open, set, close(->open), iter2: open(skip), set, close(done)
-        # The set color step runs twice
         assert colors_seen.count((255, 0, 0)) >= 2
 
     @pytest.mark.asyncio
@@ -296,79 +232,49 @@ class TestSequenceExecution:
 
     @pytest.mark.asyncio
     async def test_set_color_creates_copy(self):
-        """Mutating the sequence's color shouldn't affect the step's stored color."""
         seq = LightSequence.create_from_pattern([
             ColorInfo(rgb=(255, 0, 0)),
             ColorInfo(rgb=(0, 255, 0)),
         ])
         await seq.runNextStep()
-        seq.color = ColorInfo(rgb=(99, 99, 99))  # override
-        # Re-create and re-run to verify the step still has the original
+        seq.color = ColorInfo(rgb=(99, 99, 99))
+
         seq2 = LightSequence.create_from_pattern([
             ColorInfo(rgb=(255, 0, 0)),
         ])
         await seq2.runNextStep()
         assert seq2.color.rgb == (255, 0, 0)
 
-    def test_loop_pattern_not_forever(self):
-        seq = LightSequence.create_from_pattern([
-            '{"rgb": [255, 0, 0]}',
-            "[",
-            '{"rgb": [0, 255, 0]}',
-            "],2",
-        ])
-        assert not seq.loops_forever
+    @pytest.mark.parametrize("pattern,expected", [
+        (['{"rgb": [255, 0, 0]}', "[", '{"rgb": [0, 255, 0]}', "],2"], False),
+        (["[", '{"rgb": [255, 0, 0]}', "]"], True),
+        (["[", '{"rgb": [255, 0, 0]}', "[", '{"rgb": [0, 255, 0]}', "],2", "],2"], False),
+    ], ids=["finite_loop", "infinite_loop", "nested_finite"])
+    def test_loops_forever(self, pattern, expected):
+        assert LightSequence.create_from_pattern(pattern).loops_forever == expected
 
-    def test_forever_loop(self):
-        seq = LightSequence.create_from_pattern([
-            "[",
-            '{"rgb": [255, 0, 0]}',
-            "]",
-        ])
-        assert seq.loops_forever
-
-    def test_nested_loops(self):
-        seq = LightSequence.create_from_pattern([
-            "[",
-            '{"rgb": [255, 0, 0]}',
-            "[",
-            '{"rgb": [0, 255, 0]}',
-            "],2",
-            "],2",
-        ])
-        assert not seq.loops_forever
-
-
-# -- Flash notification pattern (real-world usage) --
 
 class TestFlashNotificationPattern:
-    """Test patterns matching our flash_notification script behavior."""
 
     def test_green_flash_pattern(self):
-        """Green flash: fade to green, hold, fade to warm white."""
         seq = LightSequence.create_from_pattern([
             '{"rgb": [0, 255, 0], "transition": 0.5, "delay": 0.5}',
             '{"kelvin": 2700, "transition": 1.0}',
         ])
-        color = seq.color
-        assert color.rgb == (0, 255, 0)
-        assert color.transition == 0.5
+        assert seq.color.rgb == (0, 255, 0)
+        assert seq.color.transition == 0.5
 
-    def test_blue_flash_pattern(self):
-        """Blue flash for manual override signal."""
+    def test_blue_flash_with_brightness(self):
         seq = LightSequence.create_from_pattern([
             '{"rgb": [0, 0, 255], "transition": 0.5, "brightness": 128, "delay": 0.5}',
             '{"kelvin": 2700, "transition": 1.0, "brightness": 128}',
         ])
-        color = seq.color
-        assert color.explicit_brightness == 128
+        assert seq.color.explicit_brightness == 128
 
     def test_brightness_preserved_across_steps(self):
-        """Both steps explicitly set brightness to maintain it."""
-        pattern = [
+        seq = LightSequence.create_from_pattern([
             '{"rgb": [0, 255, 0], "brightness": 200, "transition": 0.5}',
             '{"kelvin": 2700, "brightness": 200, "transition": 1.0}',
-        ]
-        seq = LightSequence.create_from_pattern(pattern)
+        ])
         assert seq.color.explicit_brightness == 200
         assert seq.color.light_params["brightness"] == 200
