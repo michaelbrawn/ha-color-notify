@@ -57,6 +57,7 @@ from .const import (
     CONF_PEEK_ENABLED,
     CONF_PEEK_TIME,
     CONF_PRIORITY,
+    CONF_RESTORE_POWER,
     CONF_RGB_SELECTOR,
     CONF_SUBSCRIPTION,
     DEFAULT_PRIORITY,
@@ -243,6 +244,9 @@ class NotificationLightEntity(LightEntity, RestoreEntity):
         self._dynamic_priority: bool = self._config_entry.options.get(
             CONF_DYNAMIC_PRIORITY, True
         )
+        self._restore_power: bool = self._config_entry.data.get(
+            CONF_RESTORE_POWER, False
+        )
         self._response_expected_expire_time: float = 0.0
 
         self._task_queue: asyncio.Queue[_QueueEntry] = asyncio.Queue()
@@ -348,10 +352,11 @@ class NotificationLightEntity(LightEntity, RestoreEntity):
         if restored_state:
             self._attr_is_on = restored_state.state == STATE_ON
             self.async_schedule_update_ha_state(True)
-            if self.is_on:
-                self.hass.async_create_task(self.async_turn_on())
-            else:
-                self.hass.async_create_task(self.async_turn_off())
+            if self._restore_power:
+                if self.is_on:
+                    self.hass.async_create_task(self.async_turn_on())
+                else:
+                    self.hass.async_create_task(self.async_turn_off())
 
     async def async_will_remove_from_hass(self):
         """Clean up before removal from HASS."""
