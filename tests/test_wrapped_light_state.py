@@ -12,19 +12,7 @@ It also eliminates _startup_quiet by decoupling state tracking from commands:
 import pytest
 
 from custom_components.color_notify.utils.wrapped_light_state import WrappedLightState
-
-
-class FakeAttributes(dict):
-    """Dict subclass that also supports .get() like HA state attributes."""
-    pass
-
-
-class FakeState:
-    """Minimal HA state object for testing."""
-
-    def __init__(self, state: str, attributes: dict | None = None):
-        self.state = state
-        self.attributes = FakeAttributes(attributes or {})
+from tests.support.entity_helpers import FakeState
 
 
 # ---------------------------------------------------------------------------
@@ -135,27 +123,20 @@ class TestFreeze:
 
 class TestRestoreColorTemp:
 
-    def test_color_temp_mode(self):
+    @pytest.mark.parametrize("brightness,color_temp,expected", [
+        (150, 370, {"brightness": 150, "color_temp": 370}),
+        (None, 370, {"color_temp": 370}),
+    ], ids=["with_brightness", "without_brightness"])
+    def test_color_temp_mode(self, brightness, color_temp, expected):
         ws = WrappedLightState()
-        ws.update(FakeState("on", {
-            "brightness": 150,
-            "color_temp": 370,
-            "color_mode": "color_temp",
-        }))
+        attrs = {"color_temp": color_temp, "color_mode": "color_temp"}
+        if brightness is not None:
+            attrs["brightness"] = brightness
+        ws.update(FakeState("on", attrs))
         params = ws.restore_params
-        assert params == {"brightness": 150, "color_temp": 370}
+        assert params == expected
         assert "rgb_color" not in params
         assert "hs_color" not in params
-
-    def test_color_temp_no_brightness(self):
-        """Light that only reports color_temp (e.g. brightness not in attributes)."""
-        ws = WrappedLightState()
-        ws.update(FakeState("on", {
-            "color_temp": 370,
-            "color_mode": "color_temp",
-        }))
-        params = ws.restore_params
-        assert params == {"color_temp": 370}
 
 
 # ---------------------------------------------------------------------------
@@ -164,26 +145,20 @@ class TestRestoreColorTemp:
 
 class TestRestoreXY:
 
-    def test_xy_mode(self):
+    @pytest.mark.parametrize("attrs,expected", [
+        (
+            {"brightness": 200, "xy_color": [0.4573, 0.41], "color_mode": "xy"},
+            {"brightness": 200, "xy_color": [0.4573, 0.41]},
+        ),
+        (
+            {"brightness": 200, "hs_color": [50.769, 15.294], "color_mode": "xy"},
+            {"brightness": 200, "hs_color": [50.769, 15.294]},
+        ),
+    ], ids=["direct_xy", "hs_fallback"])
+    def test_xy_mode(self, attrs, expected):
         ws = WrappedLightState()
-        ws.update(FakeState("on", {
-            "brightness": 200,
-            "xy_color": [0.4573, 0.41],
-            "color_mode": "xy",
-        }))
-        params = ws.restore_params
-        assert params == {"brightness": 200, "xy_color": [0.4573, 0.41]}
-
-    def test_xy_mode_with_hs_fallback(self):
-        """If xy_color missing but hs_color present, use hs."""
-        ws = WrappedLightState()
-        ws.update(FakeState("on", {
-            "brightness": 200,
-            "hs_color": [50.769, 15.294],
-            "color_mode": "xy",
-        }))
-        params = ws.restore_params
-        assert params == {"brightness": 200, "hs_color": [50.769, 15.294]}
+        ws.update(FakeState("on", attrs))
+        assert ws.restore_params == expected
 
 
 # ---------------------------------------------------------------------------
@@ -243,16 +218,14 @@ class TestRestoreBrightness:
 
 class TestRestoreOff:
 
-    def test_off_state_returns_empty(self):
-        """Off lights don't need restore params — just turn_off."""
+    @pytest.mark.parametrize("states,label", [
+        ([("off", None)], "off_state"),
+        ([("on", {"brightness": 150}), ("off", None)], "on_then_off"),
+    ], ids=["off_state", "on_then_off"])
+    def test_off_returns_empty(self, states, label):
         ws = WrappedLightState()
-        ws.update(FakeState("off"))
-        assert ws.restore_params == {}
-
-    def test_off_after_on_returns_empty(self):
-        ws = WrappedLightState()
-        ws.update(FakeState("on", {"brightness": 150}))
-        ws.update(FakeState("off"))
+        for state_str, attrs in states:
+            ws.update(FakeState(state_str, attrs))
         assert ws.restore_params == {}
 
 
@@ -262,37 +235,25 @@ class TestRestoreOff:
 
 class TestRestoreEdgeCases:
 
-    def test_unknown_color_mode_falls_back_to_available_attrs(self):
-        """If color_mode is something we don't handle, include what we can."""
+    @pytest.mark.parametrize("attrs,expected_keys", [
+        (
+            {"brightness": 100, "color_mode": "rgbww", "rgb_color": [255, 200, 150]},
+            {"brightness": 100, "rgb_color": [255, 200, 150]},
+        ),
+        (
+            {"brightness": 200},
+            {"brightness": 200},
+        ),
+        (
+            {"brightness": 150, "color_temp": None, "color_mode": "color_temp"},
+            {"brightness": 150},
+        ),
+    ], ids=["unknown_mode", "no_color_attrs", "none_values"])
+    def test_edge_cases(self, attrs, expected_keys):
         ws = WrappedLightState()
-        ws.update(FakeState("on", {
-            "brightness": 100,
-            "color_mode": "rgbww",
-            "rgb_color": [255, 200, 150],
-        }))
+        ws.update(FakeState("on", attrs))
         params = ws.restore_params
-        assert params["brightness"] == 100
-        assert params["rgb_color"] == [255, 200, 150]
-
-    def test_no_color_attributes_returns_brightness_only(self):
-        ws = WrappedLightState()
-        ws.update(FakeState("on", {
-            "brightness": 200,
-        }))
-        params = ws.restore_params
-        assert params == {"brightness": 200}
-
-    def test_none_values_excluded(self):
-        """Attributes present but None should not appear in restore_params."""
-        ws = WrappedLightState()
-        ws.update(FakeState("on", {
-            "brightness": 150,
-            "color_temp": None,
-            "color_mode": "color_temp",
-        }))
-        params = ws.restore_params
-        assert "color_temp" not in params
-        assert params == {"brightness": 150}
+        assert params == expected_keys
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +280,6 @@ class TestStartupDecoupling:
         ws.update(FakeState("off"))
         ws.freeze()  # Notification starts
         assert ws.is_on is False
-        # After notification: caller checks is_on to decide turn_off vs turn_on
 
     def test_startup_on_then_notification_then_restore(self):
         """Light on at startup, notification plays, restore to original."""

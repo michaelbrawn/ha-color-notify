@@ -10,86 +10,28 @@ These tests validate the integration between WrappedLightState and the entity's
 restore logic without running the full worker loop.
 """
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import pytest
 
-from custom_components.color_notify.const import (
-    CONF_RESTORE_POWER,
-    WARM_WHITE_RGB,
-)
+from custom_components.color_notify.const import CONF_RESTORE_POWER, WARM_WHITE_RGB
 from custom_components.color_notify.utils.wrapped_light_state import WrappedLightState
+from tests.support.entity_helpers import (
+    FakeState,
+    make_config_entry,
+    make_light_entity,
+    simulate_restore,
+)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-class FakeState:
-    """Minimal HA state object."""
-
-    def __init__(self, state: str, attributes: dict | None = None):
-        self.state = state
-        self.attributes = attributes or {}
-
-
-def make_config_entry(restore_power: bool = False):
-    entry = MagicMock()
-    entry.data = {
-        "type": "light",
-        "name": "Test Light",
-        "entity_id": "light.test_real_light",
-        "color_picker": list(WARM_WHITE_RGB),
-        "dynamic_priority": True,
-        "priority": 1000,
-        "delay": True,
-        "delay_time": {"seconds": 5},
-        "peek_time": {"seconds": 5},
-        CONF_RESTORE_POWER: restore_power,
-    }
-    entry.options = {}
-    entry.title = "[Light] Test Light"
-    entry.async_create_background_task = MagicMock()
-    entry.async_on_unload = MagicMock()
-    return entry
-
-
-def make_light_entity(config_entry):
-    from custom_components.color_notify.light import NotificationLightEntity
-
-    entity = NotificationLightEntity(
-        unique_id="test_unique_id",
-        wrapped_entity_id="light.test_real_light",
-        config_entry=config_entry,
-    )
-    entity.hass = MagicMock()
-    entity.hass.states.get.return_value = None
-    entity.hass.bus.async_fire = MagicMock()
-    entity.hass.async_create_task = MagicMock()
-    entity.hass.services.async_call = AsyncMock()
-    entity.async_write_ha_state = MagicMock()
-    entity.async_schedule_update_ha_state = MagicMock()
-    entity._wrapped_init_done = True
+def _make_entity(restore_power: bool = False):
+    overrides = {CONF_RESTORE_POWER: restore_power, "dynamic_priority": True}
+    entry = make_config_entry(data_overrides=overrides)
+    entity = make_light_entity(entry)
+    entity._startup_quiet = False
     return entity
-
-
-async def simulate_restore(entity, wrapped_state: WrappedLightState):
-    """Simulate what happens when notifications clear and base state restores.
-
-    This mirrors _process_sequence_list behavior when top sequence is base state.
-    Instead of sending LIGHT_ON_SEQUENCE.color (WARM_WHITE_RGB), uses tracked state.
-    """
-    if wrapped_state.is_on:
-        params = wrapped_state.restore_params
-        if params:
-            await entity._wrapped_light_turn_on(**params)
-        else:
-            # ON but no params — just turn on with no args
-            await entity._wrapped_light_turn_on()
-    else:
-        await entity._wrapped_light_turn_off()
-    wrapped_state.unfreeze()
 
 
 # ---------------------------------------------------------------------------
@@ -99,16 +41,17 @@ async def simulate_restore(entity, wrapped_state: WrappedLightState):
 class TestRestoreColorTemp:
 
     @pytest.mark.asyncio
-    async def test_restore_to_warm_white_2700k(self):
-        """Hue light at 2700K / brightness 150 → notification → restore."""
-        config_entry = make_config_entry()
-        entity = make_light_entity(config_entry)
-        entity._startup_quiet = False
+    @pytest.mark.parametrize("brightness,color_temp,label", [
+        (150, 370, "warm_2700k"),
+        (255, 312, "cool_3200k"),
+    ], ids=["warm_2700k", "cool_3200k"])
+    async def test_restore_color_temp(self, brightness, color_temp, label):
+        entity = _make_entity()
 
         tracker = WrappedLightState()
         tracker.update(FakeState("on", {
-            "brightness": 150,
-            "color_temp": 370,  # mireds for ~2700K
+            "brightness": brightness,
+            "color_temp": color_temp,
             "color_mode": "color_temp",
         }))
         tracker.freeze()
@@ -118,31 +61,9 @@ class TestRestoreColorTemp:
         entity.hass.services.async_call.assert_called_once()
         call_kwargs = entity.hass.services.async_call.call_args
         service_data = call_kwargs[1].get("service_data") or call_kwargs[0][2]
-        assert service_data["brightness"] == 150
-        assert service_data["color_temp"] == 370
+        assert service_data["brightness"] == brightness
+        assert service_data["color_temp"] == color_temp
         assert "rgb_color" not in service_data
-
-    @pytest.mark.asyncio
-    async def test_restore_to_cool_white_3200k(self):
-        """Hue light at 3200K / brightness 255 → notification → restore."""
-        config_entry = make_config_entry()
-        entity = make_light_entity(config_entry)
-        entity._startup_quiet = False
-
-        tracker = WrappedLightState()
-        tracker.update(FakeState("on", {
-            "brightness": 255,
-            "color_temp": 312,  # mireds for ~3200K
-            "color_mode": "color_temp",
-        }))
-        tracker.freeze()
-
-        await simulate_restore(entity, tracker)
-
-        call_kwargs = entity.hass.services.async_call.call_args
-        service_data = call_kwargs[1].get("service_data") or call_kwargs[0][2]
-        assert service_data["brightness"] == 255
-        assert service_data["color_temp"] == 312
 
 
 # ---------------------------------------------------------------------------
@@ -154,9 +75,7 @@ class TestRestoreXY:
     @pytest.mark.asyncio
     async def test_restore_xy_warm_white(self):
         """Hue light in xy mode (warm white) → notification → restore."""
-        config_entry = make_config_entry()
-        entity = make_light_entity(config_entry)
-        entity._startup_quiet = False
+        entity = _make_entity()
 
         tracker = WrappedLightState()
         tracker.update(FakeState("on", {
@@ -183,21 +102,20 @@ class TestRestoreXY:
 class TestRestoreOff:
 
     @pytest.mark.asyncio
-    async def test_restore_off_sends_turn_off(self):
-        """Light was off before notification → restore turns it off."""
-        config_entry = make_config_entry()
-        entity = make_light_entity(config_entry)
-        entity._startup_quiet = False
+    @pytest.mark.parametrize("states,label", [
+        ([("off", None)], "off_stays_off"),
+        ([("on", {"brightness": 100}), ("off", None)], "on_then_off"),
+    ], ids=["off_stays_off", "on_then_off"])
+    async def test_restore_off_sends_turn_off(self, states, label):
+        entity = _make_entity()
 
         tracker = WrappedLightState()
-        tracker.update(FakeState("off"))
+        for state_str, attrs in states:
+            tracker.update(FakeState(state_str, attrs))
         tracker.freeze()
 
         await simulate_restore(entity, tracker)
 
-        call_kwargs = entity.hass.services.async_call.call_args
-        service_data = call_kwargs[1].get("service_data") or call_kwargs[0][2]
-        # Should be a turn_off call
         assert entity.hass.services.async_call.call_count == 1
         call_args = entity.hass.services.async_call.call_args[0]
         assert call_args[1] == "turn_off"
@@ -212,9 +130,7 @@ class TestRestoreBrightnessOnly:
     @pytest.mark.asyncio
     async def test_restore_caseta_dimmer(self):
         """Caseta dimmer: brightness only, no color mode."""
-        config_entry = make_config_entry()
-        entity = make_light_entity(config_entry)
-        entity._startup_quiet = False
+        entity = _make_entity()
 
         tracker = WrappedLightState()
         tracker.update(FakeState("on", {
@@ -239,37 +155,21 @@ class TestRestoreBrightnessOnly:
 class TestStartupNoCommands:
 
     @pytest.mark.asyncio
-    async def test_startup_reads_state_only(self):
-        """On startup, tracker reads state but entity sends no commands."""
-        config_entry = make_config_entry(restore_power=False)
-        entity = make_light_entity(config_entry)
+    @pytest.mark.parametrize("state,expected_on", [
+        ("on", True),
+        ("off", False),
+    ], ids=["on", "off"])
+    async def test_startup_reads_state_only(self, state, expected_on):
+        overrides = {CONF_RESTORE_POWER: False, "dynamic_priority": True}
+        entry = make_config_entry(data_overrides=overrides)
+        entity = make_light_entity(entry)
 
         tracker = WrappedLightState()
-
-        # Simulate startup: wrapped light is on with known state
-        tracker.update(FakeState("on", {
-            "brightness": 150,
-            "color_temp": 370,
-            "color_mode": "color_temp",
-        }))
-
-        # No freeze, no restore — just tracking
-        assert tracker.has_state is True
-        assert tracker.is_on is True
-        # Entity should NOT have sent any commands
-        entity.hass.services.async_call.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_startup_off_no_commands(self):
-        """Light was off at startup — no commands sent."""
-        config_entry = make_config_entry(restore_power=False)
-        entity = make_light_entity(config_entry)
-
-        tracker = WrappedLightState()
-        tracker.update(FakeState("off"))
+        attrs = {"brightness": 150, "color_temp": 370, "color_mode": "color_temp"} if state == "on" else None
+        tracker.update(FakeState(state, attrs))
 
         assert tracker.has_state is True
-        assert tracker.is_on is False
+        assert tracker.is_on is expected_on
         entity.hass.services.async_call.assert_not_called()
 
 
@@ -282,9 +182,7 @@ class TestFreezeBlocksTracking:
     @pytest.mark.asyncio
     async def test_notification_changes_ignored_during_freeze(self):
         """State changes during notification don't corrupt restore state."""
-        config_entry = make_config_entry()
-        entity = make_light_entity(config_entry)
-        entity._startup_quiet = False
+        entity = _make_entity()
 
         tracker = WrappedLightState()
 
@@ -316,9 +214,7 @@ class TestFreezeBlocksTracking:
     @pytest.mark.asyncio
     async def test_multiple_notifications_preserve_original_state(self):
         """Multiple notifications in sequence: always restore to original."""
-        config_entry = make_config_entry()
-        entity = make_light_entity(config_entry)
-        entity._startup_quiet = False
+        entity = _make_entity()
 
         tracker = WrappedLightState()
 
@@ -365,7 +261,6 @@ class TestContrastOldBehavior:
         # This is what LIGHT_ON_SEQUENCE.color.light_params returns
         old_restore = ColorInfo(WARM_WHITE_RGB, 255).light_params
         assert old_restore == {"rgb_color": WARM_WHITE_RGB}
-        # Note: brightness 255 hardcoded, no color_temp, no original state
 
     @pytest.mark.asyncio
     async def test_new_behavior_restores_actual_state(self):
@@ -380,4 +275,3 @@ class TestContrastOldBehavior:
 
         new_restore = tracker.restore_params
         assert new_restore == {"brightness": 150, "color_temp": 370}
-        # No WARM_WHITE_RGB, no brightness 255 — actual state preserved

@@ -850,16 +850,6 @@ class NotificationLightEntity(LightEntity, RestoreEntity):
         else:
             return await self._wrapped_light_turn_off()
 
-    @staticmethod
-    def _rgb_to_hs_brightness(
-        r: float, g: float, b: float
-    ) -> tuple[float, float, float]:
-        """Return RGB to HS plus brightness."""
-        h, s, v = color_RGB_to_hsv(r, g, b)
-        # Re-scale 'v' from 0-100 to 0-255
-        v = round((255 / 100) * v)
-        return (h, s, v)
-
     def _create_sequence_from_attr(
         self, attributes: dict[str, Any], notify_id: str | None = None
     ) -> _NotificationSequence:
@@ -932,7 +922,7 @@ class NotificationLightEntity(LightEntity, RestoreEntity):
         """Handle a toggle service call."""
         # Turn 'on' the light if it is off, or if dynamic priority is enabled and 'on' isn't top.
         if not self.is_on or (
-            self._dynamic_priority and self._get_top_sequence().notify_id != STATE_ON
+            self._dynamic_priority and self._get_top_sequences()[0].notify_id != STATE_ON
         ):
             await self.async_turn_on(**kwargs)
         else:
